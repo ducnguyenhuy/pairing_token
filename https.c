@@ -587,25 +587,27 @@ static int https_connect(HTTP_INFO *hi, char *host, char *port)
                                            MBEDTLS_SSL_PRESET_DEFAULT );
         if( ret != 0 )
         {
+            printf("Failed to set SSL defaults: %d\n", ret);
             return ret;
         }
 
-        /* OPTIONAL is not optimal for security,
-         * but makes interop easier in this simplified example */
-        mbedtls_ssl_conf_authmode( &hi->tls.conf, MBEDTLS_SSL_VERIFY_OPTIONAL );
+        /* Use strict certificate verification */
+        mbedtls_ssl_conf_authmode( &hi->tls.conf, MBEDTLS_SSL_VERIFY_REQUIRED );
         mbedtls_ssl_conf_ca_chain( &hi->tls.conf, &hi->tls.cacert, NULL );
         mbedtls_ssl_conf_rng( &hi->tls.conf, mbedtls_ctr_drbg_random, &hi->tls.ctr_drbg );
-        mbedtls_ssl_conf_read_timeout( &hi->tls.conf, 5000 );
+        mbedtls_ssl_conf_read_timeout( &hi->tls.conf, 10000 );  // Increase timeout to 10 seconds
 
         ret = mbedtls_ssl_setup( &hi->tls.ssl, &hi->tls.conf );
         if( ret != 0 )
         {
+            printf("Failed to setup SSL: %d\n", ret);
             return ret;
         }
 
         ret = mbedtls_ssl_set_hostname( &hi->tls.ssl, host );
         if( ret != 0 )
         {
+            printf("Failed to set hostname: %d\n", ret);
             return ret;
         }
     }
@@ -620,19 +622,26 @@ static int https_connect(HTTP_INFO *hi, char *host, char *port)
     {
         mbedtls_ssl_set_bio(&hi->tls.ssl, &hi->tls.ssl_fd, mbedtls_net_send, mbedtls_net_recv, mbedtls_net_recv_timeout);
 
+        printf("Starting SSL handshake...\n");
         while ((ret = mbedtls_ssl_handshake(&hi->tls.ssl)) != 0)
         {
             if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE)
             {
+                char error_buf[100];
+                mbedtls_strerror(ret, error_buf, sizeof(error_buf));
+                printf("SSL handshake failed: %s(%d)\n", error_buf, ret);
                 return ret;
             }
         }
+        printf("SSL handshake completed\n");
 
         /* In real life, we probably want to bail out when ret != 0 */
         if( hi->tls.verify && (mbedtls_ssl_get_verify_result(&hi->tls.ssl) != 0) )
         {
+            printf("Certificate verification failed\n");
             return MBEDTLS_ERR_X509_CERT_VERIFY_FAILED;
         }
+        printf("Certificate verification passed\n");
     }
 
     return 0;
@@ -889,33 +898,36 @@ int http_post(HTTP_INFO *hi, char *url, char *data, char *response, int size)
     }
 
     /* Send HTTP request. */
-    len = snprintf(request, 1024,
-            "POST %s HTTP/1.1\r\n"
-            "User-Agent: Mozilla/4.0\r\n"
-            "Host: %s:%s\r\n"
-            "Connection: Keep-Alive\r\n"
-            "Accept: */*\r\n"
-            "Content-Type: application/json; charset=utf-8\r\n"
-            "Content-Length: %d\r\n"
-            "%s\r\n"
-            "%s",
-            dir, host, port,
-            (int)strlen(data),
-            hi->request.cookie,
-            data);
+    len = snprintf(request, sizeof(request),
+        "POST %s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36\r\n"
+        "Accept: */*\r\n"
+        "Accept-Language: en-US,en;q=0.9\r\n"
+        "Content-Type: application/json\r\n"
+        "Origin: https://%s\r\n"
+        "Referer: https://%s/\r\n"
+        "Connection: keep-alive\r\n"
+        "Content-Length: %zu\r\n"
+        "\r\n"
+        "%s",
+        dir, host, host, host, strlen(data), data);
+
+    printf("Sending HTTP request:\n%s\n", request);
 
     if((ret = https_write(hi, request, len)) != len)
     {
         https_close(hi);
 
         mbedtls_strerror(ret, err, 100);
+        printf("Failed to write request: %s(%d)\n", err, ret);
 
         snprintf(response, 256, "socket error: %s(%d)", err, ret);
 
         return -1;
     }
 
-//  printf("request: %s \r\n\r\n", request);
+    printf("Request sent successfully\n");
 
     hi->response.status = 0;
     hi->response.content_length = 0;
